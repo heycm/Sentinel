@@ -15,6 +15,9 @@
  */
 package com.alibaba.csp.sentinel.dashboard.controller;
 
+import com.alibaba.csp.sentinel.dashboard.datasource.entity.rule.FlowRuleEntity;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
 import java.util.Date;
 import java.util.List;
 
@@ -34,6 +37,7 @@ import com.alibaba.csp.sentinel.dashboard.domain.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -57,10 +61,17 @@ public class DegradeController {
 
     @Autowired
     private RuleRepository<DegradeRuleEntity, Long> repository;
-    @Autowired
-    private SentinelApiClient sentinelApiClient;
+    // @Autowired
+    // private SentinelApiClient sentinelApiClient;
     @Autowired
     private AppManagement appManagement;
+
+    @Autowired
+    @Qualifier("degradeRuleNacosProvider")
+    private DynamicRuleProvider<List<DegradeRuleEntity>> ruleProvider;
+    @Autowired
+    @Qualifier("degradeRuleNacosPublisher")
+    private DynamicRulePublisher<List<DegradeRuleEntity>> rulePublisher;
 
     @GetMapping("/rules.json")
     @AuthAction(PrivilegeType.READ_RULE)
@@ -78,7 +89,8 @@ public class DegradeController {
             return Result.ofFail(-1, "given ip does not belong to given app");
         }
         try {
-            List<DegradeRuleEntity> rules = sentinelApiClient.fetchDegradeRuleOfMachine(app, ip, port);
+            // List<DegradeRuleEntity> rules = sentinelApiClient.fetchDegradeRuleOfMachine(app, ip, port);
+            List<DegradeRuleEntity> rules = ruleProvider.getRules(app);
             rules = repository.saveAll(rules);
             return Result.ofSuccess(rules);
         } catch (Throwable throwable) {
@@ -89,7 +101,7 @@ public class DegradeController {
 
     @PostMapping("/rule")
     @AuthAction(PrivilegeType.WRITE_RULE)
-    public Result<DegradeRuleEntity> apiAddRule(@RequestBody DegradeRuleEntity entity) {
+    public Result<DegradeRuleEntity> apiAddRule(@RequestBody DegradeRuleEntity entity) throws Exception {
         Result<DegradeRuleEntity> checkResult = checkEntityInternal(entity);
         if (checkResult != null) {
             return checkResult;
@@ -112,7 +124,7 @@ public class DegradeController {
     @PutMapping("/rule/{id}")
     @AuthAction(PrivilegeType.WRITE_RULE)
     public Result<DegradeRuleEntity> apiUpdateRule(@PathVariable("id") Long id,
-                                                     @RequestBody DegradeRuleEntity entity) {
+                                                     @RequestBody DegradeRuleEntity entity) throws Exception {
         if (id == null || id <= 0) {
             return Result.ofFail(-1, "id can't be null or negative");
         }
@@ -145,7 +157,7 @@ public class DegradeController {
 
     @DeleteMapping("/rule/{id}")
     @AuthAction(PrivilegeType.DELETE_RULE)
-    public Result<Long> delete(@PathVariable("id") Long id) {
+    public Result<Long> delete(@PathVariable("id") Long id) throws Exception {
         if (id == null) {
             return Result.ofFail(-1, "id can't be null");
         }
@@ -167,9 +179,12 @@ public class DegradeController {
         return Result.ofSuccess(id);
     }
 
-    private boolean publishRules(String app, String ip, Integer port) {
-        List<DegradeRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
-        return sentinelApiClient.setDegradeRuleOfMachine(app, ip, port, rules);
+    private boolean publishRules(String app, String ip, Integer port) throws Exception {
+        // List<DegradeRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
+        // return sentinelApiClient.setDegradeRuleOfMachine(app, ip, port, rules);
+        List<DegradeRuleEntity> rules = repository.findAllByApp(app);
+        rulePublisher.publish(app, rules);
+        return true;
     }
 
     private <R> Result<R> checkEntityInternal(DegradeRuleEntity entity) {

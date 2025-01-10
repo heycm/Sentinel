@@ -15,24 +15,23 @@
  */
 package com.alibaba.csp.sentinel.dashboard.controller;
 
-import java.util.Date;
-import java.util.List;
-
 import com.alibaba.csp.sentinel.dashboard.auth.AuthAction;
-import com.alibaba.csp.sentinel.dashboard.client.SentinelApiClient;
-import com.alibaba.csp.sentinel.dashboard.discovery.AppManagement;
-import com.alibaba.csp.sentinel.dashboard.discovery.MachineInfo;
 import com.alibaba.csp.sentinel.dashboard.auth.AuthService.PrivilegeType;
-import com.alibaba.csp.sentinel.slots.block.RuleConstant;
-import com.alibaba.csp.sentinel.util.StringUtil;
-
+import com.alibaba.csp.sentinel.dashboard.client.SentinelApiClient;
 import com.alibaba.csp.sentinel.dashboard.datasource.entity.rule.AuthorityRuleEntity;
+import com.alibaba.csp.sentinel.dashboard.discovery.AppManagement;
 import com.alibaba.csp.sentinel.dashboard.domain.Result;
 import com.alibaba.csp.sentinel.dashboard.repository.rule.RuleRepository;
-
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
+import com.alibaba.csp.sentinel.slots.block.RuleConstant;
+import com.alibaba.csp.sentinel.util.StringUtil;
+import java.util.Date;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -53,18 +52,26 @@ public class AuthorityRuleController {
 
     private final Logger logger = LoggerFactory.getLogger(AuthorityRuleController.class);
 
-    @Autowired
-    private SentinelApiClient sentinelApiClient;
+    // @Autowired
+    // private SentinelApiClient sentinelApiClient;
     @Autowired
     private RuleRepository<AuthorityRuleEntity, Long> repository;
     @Autowired
     private AppManagement appManagement;
 
+
+    @Autowired
+    @Qualifier("authorityRuleNacosProvider")
+    private DynamicRuleProvider<List<AuthorityRuleEntity>> ruleProvider;
+    @Autowired
+    @Qualifier("authorityRuleNacosPublisher")
+    private DynamicRulePublisher<List<AuthorityRuleEntity>> rulePublisher;
+
     @GetMapping("/rules")
     @AuthAction(PrivilegeType.READ_RULE)
     public Result<List<AuthorityRuleEntity>> apiQueryAllRulesForMachine(@RequestParam String app,
-                                                                        @RequestParam String ip,
-                                                                        @RequestParam Integer port) {
+            @RequestParam String ip,
+            @RequestParam Integer port) {
         if (StringUtil.isEmpty(app)) {
             return Result.ofFail(-1, "app cannot be null or empty");
         }
@@ -78,7 +85,8 @@ public class AuthorityRuleController {
             return Result.ofFail(-1, "given ip does not belong to given app");
         }
         try {
-            List<AuthorityRuleEntity> rules = sentinelApiClient.fetchAuthorityRulesOfMachine(app, ip, port);
+            // List<AuthorityRuleEntity> rules = sentinelApiClient.fetchAuthorityRulesOfMachine(app, ip, port);
+            List<AuthorityRuleEntity> rules = ruleProvider.getRules(app);
             rules = repository.saveAll(rules);
             return Result.ofSuccess(rules);
         } catch (Throwable throwable) {
@@ -110,7 +118,7 @@ public class AuthorityRuleController {
             return Result.ofFail(-1, "limitApp should be valid");
         }
         if (entity.getStrategy() != RuleConstant.AUTHORITY_WHITE
-            && entity.getStrategy() != RuleConstant.AUTHORITY_BLACK) {
+                && entity.getStrategy() != RuleConstant.AUTHORITY_BLACK) {
             return Result.ofFail(-1, "Unknown strategy (must be blacklist or whitelist)");
         }
         return null;
@@ -118,7 +126,7 @@ public class AuthorityRuleController {
 
     @PostMapping("/rule")
     @AuthAction(PrivilegeType.WRITE_RULE)
-    public Result<AuthorityRuleEntity> apiAddAuthorityRule(@RequestBody AuthorityRuleEntity entity) {
+    public Result<AuthorityRuleEntity> apiAddAuthorityRule(@RequestBody AuthorityRuleEntity entity) throws Exception {
         Result<AuthorityRuleEntity> checkResult = checkEntityInternal(entity);
         if (checkResult != null) {
             return checkResult;
@@ -142,7 +150,7 @@ public class AuthorityRuleController {
     @PutMapping("/rule/{id}")
     @AuthAction(PrivilegeType.WRITE_RULE)
     public Result<AuthorityRuleEntity> apiUpdateParamFlowRule(@PathVariable("id") Long id,
-                                                              @RequestBody AuthorityRuleEntity entity) {
+            @RequestBody AuthorityRuleEntity entity) throws Exception {
         if (id == null || id <= 0) {
             return Result.ofFail(-1, "Invalid id");
         }
@@ -171,7 +179,7 @@ public class AuthorityRuleController {
 
     @DeleteMapping("/rule/{id}")
     @AuthAction(PrivilegeType.DELETE_RULE)
-    public Result<Long> apiDeleteRule(@PathVariable("id") Long id) {
+    public Result<Long> apiDeleteRule(@PathVariable("id") Long id) throws Exception {
         if (id == null) {
             return Result.ofFail(-1, "id cannot be null");
         }
@@ -190,8 +198,11 @@ public class AuthorityRuleController {
         return Result.ofSuccess(id);
     }
 
-    private boolean publishRules(String app, String ip, Integer port) {
-        List<AuthorityRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
-        return sentinelApiClient.setAuthorityRuleOfMachine(app, ip, port, rules);
+    private boolean publishRules(String app, String ip, Integer port) throws Exception {
+        // List<AuthorityRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
+        // return sentinelApiClient.setAuthorityRuleOfMachine(app, ip, port, rules);
+        List<AuthorityRuleEntity> rules = repository.findAllByApp(app);
+        rulePublisher.publish(app, rules);
+        return true;
     }
 }

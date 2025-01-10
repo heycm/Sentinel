@@ -15,6 +15,9 @@
  */
 package com.alibaba.csp.sentinel.dashboard.controller;
 
+import com.alibaba.csp.sentinel.dashboard.datasource.entity.rule.FlowRuleEntity;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -39,6 +42,7 @@ import com.alibaba.csp.sentinel.dashboard.util.VersionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -66,13 +70,20 @@ public class ParamFlowRuleController {
     @Autowired
     private RuleRepository<ParamFlowRuleEntity, Long> repository;
 
+    @Autowired
+    @Qualifier("paramFlowRuleNacosProvider")
+    private DynamicRuleProvider<List<ParamFlowRuleEntity>> ruleProvider;
+    @Autowired
+    @Qualifier("paramFlowRuleNacosPublisher")
+    private DynamicRulePublisher<List<ParamFlowRuleEntity>> rulePublisher;
+
     private boolean checkIfSupported(String app, String ip, int port) {
         try {
             return Optional.ofNullable(appManagement.getDetailApp(app))
-                .flatMap(e -> e.getMachine(ip, port))
-                .flatMap(m -> VersionUtils.parseVersion(m.getVersion())
-                    .map(v -> v.greaterOrEqual(version020)))
-                .orElse(true);
+                    .flatMap(e -> e.getMachine(ip, port))
+                    .flatMap(m -> VersionUtils.parseVersion(m.getVersion())
+                            .map(v -> v.greaterOrEqual(version020)))
+                    .orElse(true);
             // If error occurred or cannot retrieve machine info, return true.
         } catch (Exception ex) {
             return true;
@@ -82,8 +93,8 @@ public class ParamFlowRuleController {
     @GetMapping("/rules")
     @AuthAction(PrivilegeType.READ_RULE)
     public Result<List<ParamFlowRuleEntity>> apiQueryAllRulesForMachine(@RequestParam String app,
-                                                                        @RequestParam String ip,
-                                                                        @RequestParam Integer port) {
+            @RequestParam String ip,
+            @RequestParam Integer port) {
         if (StringUtil.isEmpty(app)) {
             return Result.ofFail(-1, "app cannot be null or empty");
         }
@@ -100,10 +111,19 @@ public class ParamFlowRuleController {
             return unsupportedVersion();
         }
         try {
-            return sentinelApiClient.fetchParamFlowRulesOfMachine(app, ip, port)
-                .thenApply(repository::saveAll)
-                .thenApply(Result::ofSuccess)
-                .get();
+            return CompletableFuture.supplyAsync(() -> {
+                        try {
+                            return ruleProvider.getRules(app);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    }).thenApply(repository::saveAll)
+                    .thenApply(Result::ofSuccess)
+                    .get();
+            // return sentinelApiClient.fetchParamFlowRulesOfMachine(app, ip, port)
+            //        .thenApply(repository::saveAll)
+            //        .thenApply(Result::ofSuccess)
+            //        .get();
         } catch (ExecutionException ex) {
             logger.error("Error when querying parameter flow rules", ex.getCause());
             if (isNotSupported(ex.getCause())) {
@@ -193,7 +213,7 @@ public class ParamFlowRuleController {
     @PutMapping("/rule/{id}")
     @AuthAction(AuthService.PrivilegeType.WRITE_RULE)
     public Result<ParamFlowRuleEntity> apiUpdateParamFlowRule(@PathVariable("id") Long id,
-                                                              @RequestBody ParamFlowRuleEntity entity) {
+            @RequestBody ParamFlowRuleEntity entity) {
         if (id == null || id <= 0) {
             return Result.ofFail(-1, "Invalid id");
         }
@@ -259,13 +279,21 @@ public class ParamFlowRuleController {
     }
 
     private CompletableFuture<Void> publishRules(String app, String ip, Integer port) {
-        List<ParamFlowRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
-        return sentinelApiClient.setParamFlowRuleOfMachine(app, ip, port, rules);
+        // List<ParamFlowRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
+        // return sentinelApiClient.setParamFlowRuleOfMachine(app, ip, port, rules);
+        return CompletableFuture.runAsync(() -> {
+            List<ParamFlowRuleEntity> rules = repository.findAllByApp(app);
+            try {
+                rulePublisher.publish(app, rules);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
     private <R> Result<R> unsupportedVersion() {
         return Result.ofFail(4041,
-            "Sentinel client not supported for parameter flow control (unsupported version or dependency absent)");
+                "Sentinel client not supported for parameter flow control (unsupported version or dependency absent)");
     }
 
     private final SentinelVersion version020 = new SentinelVersion().setMinorVersion(2);
